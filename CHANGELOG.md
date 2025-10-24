@@ -1,6 +1,7 @@
 ## Changelog
 - master
   - New
+    - Added Markov Chain feedback with parameter display for adaptive fuzzing based on response patterns                                             │
     - Added audit logging functionality
   - Changed
     - Fix a bug in autocalibration strategy merging, when two files have the same strategy key
