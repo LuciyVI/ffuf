@@ -9,6 +9,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	
+	"github.com/ffuf/ffuf/v2/pkg/markov"
 )
 
 // Job ties together Config, Runner, Input and Output
@@ -39,6 +41,7 @@ type Job struct {
 	queuepos             int
 	skipQueue            bool
 	currentDepth         int
+	MarkovChain          *markov.MarkovInputProvider
 	calibMutex           sync.Mutex
 	pauseWg              sync.WaitGroup
 }
@@ -63,6 +66,7 @@ func NewJob(conf *Config) *Job {
 	j.currentDepth = 0
 	j.Rate = NewRateThrottle(conf)
 	j.skipQueue = false
+	j.MarkovChain = nil
 	return &j
 }
 
@@ -113,6 +117,18 @@ func (j *Job) Start() {
 	}
 
 	basereq := BaseRequest(j.Config)
+
+	// Initialize Markov chain if markov mode is enabled
+	// For now, we'll create a basic baseline state. In a full implementation,
+	// we would establish a baseline by sending a request to a known non-existent path
+	baselineState := markov.State{
+		CodeClass:  "4xx", // Assuming baseline is 404
+		SizeBucket: markov.QuantizeSize(139), // Common 404 response size
+		Depth:      j.currentDepth,
+	}
+	baselineSizeHash := markov.GetSizeHash([]byte("404 not found")) // Placeholder
+	
+	j.MarkovChain = markov.NewMarkovInputProvider(j.Input, baselineState, baselineSizeHash, j.currentDepth)
 
 	if j.Config.InputMode == "sniper" {
 		// process multiple payload locations and create a queue job for each location
@@ -474,6 +490,29 @@ func (j *Job) runTask(input map[string][]byte, position int, retried bool) {
 			j.inc429()
 		}
 	}
+	
+	// Update Markov chain with the response if enabled
+	if j.MarkovChain != nil {
+		// Convert ffuf.Response to markov.Response
+		markovResp := &markov.Response{
+			StatusCode:    resp.StatusCode,
+			Headers:       resp.Headers,
+			Data:          resp.Data,
+			ContentLength: resp.ContentLength,
+			ContentWords:  resp.ContentWords,
+			ContentLines:  resp.ContentLines,
+			ContentType:   resp.ContentType,
+			Cancelled:     resp.Cancelled,
+			Request:       resp.Request,
+			Raw:           resp.Raw,
+			ResultFile:    resp.ResultFile,
+			ScraperData:   resp.ScraperData,
+			Duration:      resp.Duration,
+			Timestamp:     resp.Timestamp,
+		}
+		j.MarkovChain.UpdateWithResponse(input, markovResp)
+	}
+	
 	j.pauseWg.Wait()
 
 	// Handle autocalibration, must be done after the actual request to ensure sane value in req.Host
